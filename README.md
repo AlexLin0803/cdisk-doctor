@@ -1,5 +1,7 @@
 # CDiskDoctor · C 盘空间医生
 
+**中文** | [English](README.en.md)
+
 > 纯 PowerShell 实现的 Windows 磁盘空间诊断 / 清理 / 迁移工具。无依赖、不联网、不上传任何数据。
 
 C 盘满了怎么办？大多数人只知道"清临时文件"，但真实占空间的往往是 **AppData 里的应用数据**（微信、飞书、剪映、WPS 动辄几个 GB）。

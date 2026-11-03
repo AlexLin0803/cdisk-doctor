@@ -1,3 +1,7 @@
+# 打包产物
+dist/
+*.zip
+
 # 生成的报告与数据（含本机路径，不要提交）
 CDiskDoctor-Report-*.html
 CDiskDoctor-Data-*.json
