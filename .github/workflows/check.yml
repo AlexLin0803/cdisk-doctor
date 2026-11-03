@@ -1,0 +1,37 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ps-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查 PowerShell 语法与 UTF-8 BOM
+        shell: pwsh
+        run: |
+          $fail = 0
+          $files = Get-ChildItem -Recurse -Filter *.ps1
+          foreach ($f in $files) {
+            $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+            $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+            if (-not $hasBom) {
+              Write-Host "::error file=$($f.Name)::缺少 UTF-8 BOM（Windows PowerShell 5.1 会按 GBK 解析导致语法错误）"
+              $fail = 1
+            }
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              foreach ($e in $errors) {
+                Write-Host "::error file=$($f.Name),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              }
+              $fail = 1
+            }
+          }
+          Write-Host "检查了 $($files.Count) 个脚本"
+          if ($fail -eq 1) { exit 1 }
+          Write-Host "全部通过"

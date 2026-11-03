@@ -1,0 +1,26 @@
+# 生成的报告与数据（含本机路径，不要提交）
+CDiskDoctor-Report-*.html
+CDiskDoctor-Data-*.json
+迁移分析-*.html
+Move-Plan-*.ps1
+clean-*.log
+migrate-manifest-*.json
+*.log
+
+# 扫描产物
+cscan.json
+census.json
+big.json
+test.json
+dbg*.json
+*.out.txt
+
+# 系统垃圾
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

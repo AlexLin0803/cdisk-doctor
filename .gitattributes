@@ -1,0 +1,14 @@
+* text=auto
+
+# Windows 批处理与 PowerShell 必须 CRLF，且 PowerShell 需要 UTF-8 BOM
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+
+*.md  text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+
+*.png binary
+*.jpg binary
+*.zip binary
