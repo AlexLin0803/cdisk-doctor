@@ -129,6 +129,24 @@ The migrator detects locked directories and **skips them, keeping the source int
 
 ---
 
+## System-level occupancy check (new in v1.1)
+
+Not all lost space is junk — sometimes a **system file simply sits on the wrong drive**. The most common case is the paging file, `pagefile.sys`.
+
+Windows manages the paging file automatically and places it wherever there is the most free space. Right after you clean up your C: drive and reboot, it may relocate the paging file from D:/E: onto C:, **consuming 12 GB or more in one shot** — it looks like half your free space vanished overnight.
+
+```powershell
+# Check only, no changes
+powershell -ExecutionPolicy Bypass -File src\CDiskDoctor.ps1 -Mode System
+
+# Move the main paging file to another drive, leaving 1 GB on C: for crash dumps
+powershell -ExecutionPolicy Bypass -File src\CDiskDoctor.ps1 -Mode System -Apply
+```
+
+`-Apply` disables automatic management and pins the configuration so Windows cannot move it back. **A reboot is required for the change to take effect.**
+
+The mode also reports the hibernation file, the swap file, and the Windows search index (`Windows.edb`). The `-Mode Analyze` report lists this section as well.
+
 ## Requirements
 
 - Windows 10 / 11 (x64)

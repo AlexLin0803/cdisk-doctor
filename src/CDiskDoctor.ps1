@@ -25,7 +25,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Analyze', 'Clean', 'Migrate', 'Help')]
+    [ValidateSet('Analyze', 'Clean', 'Migrate', 'System', 'Help')]
     [string]$Mode = 'Analyze',
 
     [string]$Root = 'C:\',
@@ -52,7 +52,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 
 if (-not $OutDir) { $OutDir = (Get-Location).Path }
-$Version = '1.0'
+$Version = '1.1'
 
 # 允许 -Categories TempUser,EdgeCache 通过 powershell -File 调用（会被当成单个字符串）
 if ($Categories) {
@@ -579,6 +579,20 @@ footer{margin-top:50px;color:#586069;font-size:12px;text-align:center}
         [void]$sb.AppendLine('<div class="note"><b>空间告急：</b>剩余不足 5%，Windows 更新、页面文件和临时文件写入都可能失败，建议先把下面的「可安全清理」执行掉。</div>')
     }
 
+    # 系统级占用（页面文件 / 休眠文件等）
+    if ($d.SystemUsage -and $d.SystemUsage.Count -gt 0) {
+        [void]$sb.AppendLine('<h2>系统级占用（普通清理看不到）</h2>')
+        [void]$sb.AppendLine('<div class="note">这些文件不是垃圾，但放错盘会白占几个甚至十几个 GB。用 <code>-Mode System</code> 检查，<code>-Mode System -Apply</code> 可把页面文件迁出 C 盘。</div>')
+        [void]$sb.AppendLine('<table><tr><th>项目</th><th class="num">占用</th><th>状态</th><th>说明</th></tr>')
+        foreach ($s in $d.SystemUsage) {
+            $cls = 't-safe'; $label = '正常'
+            if ($s.Severity -eq 'warn') { $cls = 't-caution'; $label = '可优化' }
+            if ($s.Severity -eq 'bad') { $cls = 't-danger'; $label = '浪费空间' }
+            [void]$sb.AppendLine(('<tr><td><b>{0}</b></td><td class="num">{1}</td><td><span class="tag {2}">{3}</span></td><td class="p">{4}</td></tr>' -f (Esc $s.Name), (Format-Size $s.Bytes), $cls, $label, (Esc $s.Advice)))
+        }
+        [void]$sb.AppendLine('</table>')
+    }
+
     # 清理清单
     [void]$sb.AppendLine('<h2>可清理项目</h2>')
     [void]$sb.AppendLine('<table><tr><th>类别</th><th>风险</th><th class="num">占用</th><th class="num">文件数</th><th>说明</th></tr>')
@@ -704,6 +718,7 @@ function Invoke-Analyze {
 
     Write-Host '  [4/4] 生成报告...' -ForegroundColor Yellow -NoNewline
     $when = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+    $sysUsage = @(Get-SystemUsage -Drive 'C:')
     $data = [pscustomobject]@{
         When = $when; Files = $scan.Files; Dirs = $scan.Dirs; Elapsed = $scan.Elapsed
         DiskTotal = if ($vol) { $vol.Size } else { 0 }
@@ -712,6 +727,7 @@ function Invoke-Analyze {
         TopDirs = $top
         BigFiles = $bigFiles
         Migrate = $migrate
+        SystemUsage = $sysUsage
     }
 
     if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
@@ -726,6 +742,17 @@ function Invoke-Analyze {
     Write-Host ''
     Write-Host ('  剩余空间 : {0:N2} GB / {1:N0} GB  ({2}% 可用)' -f ($data.DiskFree/1GB), ($data.DiskTotal/1GB), [math]::Round($data.DiskFree/$data.DiskTotal*100,1)) -ForegroundColor White
     Write-Host ''
+
+    if ($data.SystemUsage.Count -gt 0) {
+        Write-Host '  系统级占用（普通清理工具看不到）:' -ForegroundColor Magenta
+        foreach ($s in $data.SystemUsage) {
+            $col = 'Gray'
+            if ($s.Severity -eq 'bad') { $col = 'Red' }
+            elseif ($s.Severity -eq 'warn') { $col = 'Yellow' }
+            Write-Host ('    {0,-28} {1,10}  {2}' -f $s.Name, (Format-Size $s.Bytes), $s.Advice) -ForegroundColor $col
+        }
+        Write-Host ''
+    }
     Write-Host '  可安全清理:' -ForegroundColor Green
     foreach ($r in ($data.Rules | Where-Object { $_.Risk -eq 'Safe' } | Sort-Object -Property Bytes -Descending)) {
         Write-Host ('    {0,-32} {1,10}' -f $r.Name, (Format-Size $r.Bytes)) -ForegroundColor Gray
@@ -937,16 +964,146 @@ function Invoke-Migrate {
 }
 
 # ============================================================
+#  系统级占用：页面文件 / 休眠文件 / 交换文件 / 搜索索引
+#  这些不是"垃圾"，但放错盘会白占几个甚至十几个 GB，
+#  普通清理工具（含早期的本工具）都发现不了。
+# ============================================================
+function Get-SystemUsage {
+    param([string]$Drive = 'C:')
+
+    $out = New-Object System.Collections.ArrayList
+    $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+    $auto = $false
+    if ($cs) { $auto = $cs.AutomaticManagedPagefile }
+
+    # 页面文件
+    $pf = @(Get-CimInstance Win32_PageFileUsage -ErrorAction SilentlyContinue)
+    $rootPf = @($pf | Where-Object { $_.Name -like "$Drive\*" })
+    if ($rootPf.Count -gt 0) {
+        $sumMB = ($rootPf | Measure-Object -Property AllocatedBaseSize -Sum).Sum
+        $bytes = [long]$sumMB * 1MB
+        if ($bytes -gt 2GB) {
+            if ($auto) {
+                $adv = 'Windows「自动管理」把页面文件放到了系统盘。用 -Mode System -Apply 迁到其他盘'
+            } else {
+                $adv = '页面文件固定在系统盘，可用 -Mode System -Apply 迁到其他盘'
+            }
+            [void]$out.Add([pscustomobject]@{ Name = '页面文件 pagefile.sys'; Bytes = $bytes; Severity = 'bad'; Advice = $adv })
+        } else {
+            [void]$out.Add([pscustomobject]@{ Name = '页面文件 pagefile.sys'; Bytes = $bytes; Severity = 'safe'; Advice = '大小合理，保留用于蓝屏转储' })
+        }
+    }
+
+    # 休眠文件
+    $hb = Get-Item "$Drive\hiberfil.sys" -Force -ErrorAction SilentlyContinue
+    if ($hb) {
+        [void]$out.Add([pscustomobject]@{ Name = '休眠文件 hiberfil.sys'; Bytes = [long]$hb.Length; Severity = 'warn'; Advice = '不需要休眠时执行 powercfg /h off 可回收' })
+    }
+
+    # 交换文件
+    $sw = Get-Item "$Drive\swapfile.sys" -Force -ErrorAction SilentlyContinue
+    if ($sw) {
+        [void]$out.Add([pscustomobject]@{ Name = '交换文件 swapfile.sys'; Bytes = [long]$sw.Length; Severity = 'safe'; Advice = 'UWP 应用使用，无需处理' })
+    }
+
+    # 搜索索引
+    $edb = Get-Item "$env:ProgramData\Microsoft\Search\Data\Applications\Windows\Windows.edb" -Force -ErrorAction SilentlyContinue
+    if ($edb -and $edb.Length -gt 512MB) {
+        [void]$out.Add([pscustomobject]@{ Name = '搜索索引 Windows.edb'; Bytes = [long]$edb.Length; Severity = 'warn'; Advice = '体积偏大，可在「索引选项」中重建（会短暂影响搜索）' })
+    }
+
+    return @($out)
+}
+
+function Invoke-SystemCheck {
+    param([switch]$ApplyFix)
+
+    Write-Host ''
+    Write-Host '  CDiskDoctor  ' -ForegroundColor Cyan -NoNewline
+    Write-Host "v$Version  -  系统级占用检查" -ForegroundColor Gray
+    Write-Host ('  ' + ('-' * 56)) -ForegroundColor DarkGray
+
+    $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+    $auto = $false
+    if ($cs) { $auto = $cs.AutomaticManagedPagefile }
+
+    $pfUsage = @(Get-CimInstance Win32_PageFileUsage -ErrorAction SilentlyContinue)
+
+    Write-Host '  页面文件:' -ForegroundColor White
+    if ($pfUsage.Count -eq 0) {
+        Write-Host '    （没有页面文件）' -ForegroundColor DarkGray
+    } else {
+        foreach ($u in $pfUsage) {
+            Write-Host ('    {0,-28} {1,10:N0} MB' -f $u.Name, $u.AllocatedBaseSize) -ForegroundColor Gray
+        }
+    }
+    Write-Host ('    自动管理: ' + $auto) -ForegroundColor DarkGray
+
+    $rootPfMB = 0
+    foreach ($u in $pfUsage) { if ($u.Name -like 'C:\*') { $rootPfMB += [long]$u.AllocatedBaseSize } }
+
+    # 休眠 / 交换
+    $hb = Get-Item 'C:\hiberfil.sys' -Force -ErrorAction SilentlyContinue
+    if ($hb) {
+        Write-Host ('  休眠文件: {0:N2} GB  （不需要休眠可执行 powercfg /h off 回收）' -f ($hb.Length/1GB)) -ForegroundColor Yellow
+    } else {
+        Write-Host '  休眠文件: 无' -ForegroundColor DarkGray
+    }
+
+    Write-Host ''
+    if ($rootPfMB -gt 2048) {
+        Write-Host ('  [!] 页面文件在 C 盘占用 {0:N1} GB，这是最常见的"空间莫名消失"原因。' -f ($rootPfMB/1024)) -ForegroundColor Yellow
+        if ($auto) {
+            Write-Host '      当前由「自动管理」决定位置——只要 C 盘空间变多，Windows 就可能把它挪回来。' -ForegroundColor DarkGray
+        }
+
+        if (-not $ApplyFix) {
+            Write-Host ''
+            Write-Host '  修复: 加 -Apply 把主页面文件迁到其他盘，C 盘只留 1 GB。' -ForegroundColor Cyan
+            Write-Host '        powershell -ExecutionPolicy Bypass -File src\CDiskDoctor.ps1 -Mode System -Apply' -ForegroundColor DarkGray
+            return
+        }
+
+        $targets = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' |
+                     Where-Object { $_.DeviceID -ne 'C:' -and $_.FreeSpace -gt 10GB } |
+                     Sort-Object -Property FreeSpace -Descending)
+        if ($targets.Count -eq 0) {
+            Write-Host '  [x] 没有可用空间超过 10 GB 的其他磁盘，已中止。' -ForegroundColor Red
+            return
+        }
+        $target = $targets[0].DeviceID
+        Write-Host ("  目标盘: {0}（可用 {1:N0} GB）" -f $target, ($targets[0].FreeSpace/1GB)) -ForegroundColor Gray
+
+        try {
+            $cs | Set-CimInstance -Property @{ AutomaticManagedPagefile = $false }
+            $mm = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
+            Set-ItemProperty -Path $mm -Name PagingFiles `
+                -Value @("C:\pagefile.sys 1024 1024", "$target\pagefile.sys 0 0") -Type MultiString
+            Write-Host '  [√] 配置已写入' -ForegroundColor Green
+            Write-Host ("      C:\pagefile.sys   1024 MB（保留蓝屏转储能力）") -ForegroundColor DarkGray
+            Write-Host ("      {0}\pagefile.sys  系统管理" -f $target) -ForegroundColor DarkGray
+            Write-Host ''
+            Write-Host ('  [i] 需要重启才能生效，预计回收 {0:N1} GB。' -f (($rootPfMB - 1024)/1024)) -ForegroundColor Yellow
+        } catch {
+            Write-Host ('  [x] 写入失败: ' + $_.Exception.Message) -ForegroundColor Red
+        }
+    } else {
+        Write-Host '  [√] 页面文件不在 C 盘或体积正常，无异常占用。' -ForegroundColor Green
+    }
+}
+
+# ============================================================
 #  入口
 # ============================================================
 switch ($Mode) {
     'Analyze' { Invoke-Analyze | Out-Null }
     'Clean'   { Invoke-Clean }
     'Migrate' { Invoke-Migrate }
+    'System'  { Invoke-SystemCheck -ApplyFix:$Apply }
     'Help'    {
         Write-Host @'
 
-  CDiskDoctor v1.0 - C 盘空间诊断 / 清理 / 迁移
+  CDiskDoctor v1.1 - C 盘空间诊断 / 清理 / 迁移
 
   Analyze  分析并生成 HTML 报告（只读）
       -Mode Analyze [-OpenReport]
@@ -965,6 +1122,10 @@ switch ($Mode) {
       -Mode Migrate -Path <源> -Target <目标根>       预览
       -Mode Migrate -Path <源> -Target <目标根> -Apply
       -Mode Migrate -Rollback <原路径> -Apply        回滚
+
+  System   系统级占用检查（页面文件 / 休眠文件 / 搜索索引）
+      -Mode System                    只检查
+      -Mode System -Apply             把页面文件迁出 C 盘（需重启生效）
 
 '@ -ForegroundColor Gray
     }

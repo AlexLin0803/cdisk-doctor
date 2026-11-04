@@ -128,6 +128,25 @@ powershell -ExecutionPolicy Bypass -File src\Migrate-All.ps1 -Rollback "C:\Users
 
 ---
 
+## 系统级占用检查（v1.1 新增）
+
+有些空间不是"垃圾"，而是系统文件放错了盘——最常见的是**页面文件 `pagefile.sys`**。
+
+Windows 默认「自动管理」页面文件位置：哪个盘空间多就往哪放。你刚清理完 C 盘、重启之后，它可能把原本在 D/E 盘的页面文件搬到 C 盘，**一次性占掉 12 GB 以上**，看起来就像"空间莫名少了一半"。
+
+```powershell
+# 只检查，不修改
+powershell -ExecutionPolicy Bypass -File src\CDiskDoctor.ps1 -Mode System
+
+# 把主页面文件迁到其他盘，C 盘只留 1 GB（保留蓝屏转储能力）
+powershell -ExecutionPolicy Bypass -File src\CDiskDoctor.ps1 -Mode System -Apply
+```
+
+`-Apply` 会关闭「自动管理」并固定配置，防止 Windows 下次再挪回来。**需要重启才生效。**
+
+该模式同时检查：页面文件、休眠文件、交换文件、Windows 搜索索引（`Windows.edb`）。
+`-Mode Analyze` 生成的报告里也会单列这一节。
+
 ## 环境要求
 
 - Windows 10 / 11（x64）
